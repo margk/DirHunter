@@ -236,7 +236,7 @@ class Sizer(object):
                     size_bar = crab.format('')
                 print(fish.format(d[1], incomplete_flag, size_bar, '[{:.0f}]'.format(i), d[0]))
 
-        print('\n[Byte scale: {:.0f}]'.format(self._unit_scale))
+        print('\n[Unit scale: 1{}B = {:.0f}B]'.format(self._units[0], self._unit_scale))
 
     def _get_current_dir(self):
         """
