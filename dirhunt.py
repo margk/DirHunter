@@ -13,6 +13,7 @@ import sys
 import time
 import multiprocessing
 import datetime
+import readline
 import cmd
 import traceback
 
@@ -814,6 +815,11 @@ class MultiSizer(object):
         while self._get_busy_workers():
 
             for worker in self._workers:
+                # check if current worker is running
+                if not worker.is_alive():
+                    logging.error('Worker [{}] has terminated unexpectedly. Cancelling analysis.'.format(worker.worker_id))
+                    return False
+
                 # current worker: check for and handle any messages
                 while worker.connection.poll():
                     message = worker.connection.recv()      # fetch message from connection
@@ -877,6 +883,9 @@ class MultiSizer(object):
             if not idle_workers:
                 time.sleep(1)
 
+        # final step: return True to signalise successfull analysis
+        return True
+
 
     def _set_dir(self, directory, _quiet=False):
         """
@@ -888,16 +897,22 @@ class MultiSizer(object):
 
         self.sizer._set_base_dir(directory)     # set specified dir in main sizer object
         self._start_workers()   # start the background workers
-        self._run()             # perform the analysis
+        success = self._run()             # perform the analysis
         self._stop_workers()    # stop the background workers
-        self.sizer._sum_sizes()     # calculate all directories' sizes
 
-        time_end = datetime.datetime.now()      # record end time (just for debugging/info)
-        print('===== elapsed time: ', str(time_end - time_start))
-        print('===== insertion cache: {} hits, {} misses'.format(self.sizer._last_counter[1], self.sizer._last_counter[0]))
-        self.sizer._last_counter = [0, 0]    # just for debugging/info: init counters for insertion cache misses & hits
+        if success:
+            self.sizer._sum_sizes()     # calculate all directories' sizes
 
-        self.sizer.cdi(_quiet=_quiet)    # prepare for subdir changes, poss. display the results
+            time_end = datetime.datetime.now()      # record end time (just for debugging/info)
+            print('===== elapsed time: ', str(time_end - time_start))
+            print('===== insertion cache: {} hits, {} misses'.format(self.sizer._last_counter[1], self.sizer._last_counter[0]))
+            self.sizer._last_counter = [0, 0]    # just for debugging/info: init counters for insertion cache misses & hits
+
+            self.sizer.cdi(_quiet=_quiet)    # prepare for subdir changes, poss. display the results
+        else:
+            self.sizer.base_dir = None
+            self.sizer.base_dir_info = None
+            # raise SizerError('')
 
     def _get_current_dir(self, full_path=True):
         """
@@ -1025,7 +1040,7 @@ class DirHunterShell(cmd.Cmd):
         """
         self.sizer.pwd()
 
-    def do_exit(self, arg):
+    def do_x(self, arg):
         """
         Quit the shell.
         """
