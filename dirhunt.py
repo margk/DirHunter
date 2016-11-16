@@ -13,7 +13,8 @@ import sys
 import time
 import multiprocessing
 import datetime
-# import traceback
+import cmd
+import traceback
 
 
 import logging
@@ -238,19 +239,34 @@ class Sizer(object):
 
         print('\n[Unit scale: 1{}B = {:.0f}B]'.format(self._units[0], self._unit_scale))
 
-    def _get_current_dir(self):
+    def _get_current_dir(self, full_path=True):
         """
         Returns the current directory of the sizer, i.e. the dir whose size information
         would be listed via the "ls" method.
 
-        @retval dir - string, current directory path or None if no dir is set
+        @param full_path - [optional] bool, flag to control whether full path is returned
+            True -> return fullpath (absolute path)
+            False -> return last dir name only (last subdir)
+        @retval dir - string, current directory or None if no dir is set
         """
         if self.base_dir is None:
             # no base dir set  ->  return None
             return None
         else:
-            # join the base dir and the dir-chain elements (chain is filled by "cdi" method)
-            return os.path.join(self.base_dir, *self._dir_chain)
+            if full_path:
+                # full path requested
+                # -> join the base dir and the dir-chain elements (chain is filled by "cdi" method)
+                return os.path.join(self.base_dir, *self._dir_chain)
+            else:
+                # only last dir name (name of last subdir) requested
+                if self._dir_chain:
+                    # dir chain is filled  ->  return last element
+                    return self._dir_chain[-1]
+                else:
+                    # dir chain is empty (i.e. currently in base dir)
+                    # -> try to extract last dir component of base dir
+                    dir_list = [dir for dir in os.path.split(self.base_dir) if dir]
+                    return str(dir_list[-1])
 
     def _set_base_dir(self, directory):
         """
@@ -862,9 +878,11 @@ class MultiSizer(object):
                 time.sleep(1)
 
 
-    def _set_dir(self, directory):
+    def _set_dir(self, directory, _quiet=False):
         """
         Sets the directory to analyse and starts the analysis.
+
+        @param directory - string, path of directory to analyse
         """
         time_start = datetime.datetime.now()    # record start time (just for debugging/info)
 
@@ -879,7 +897,40 @@ class MultiSizer(object):
         print('===== insertion cache: {} hits, {} misses'.format(self.sizer._last_counter[1], self.sizer._last_counter[0]))
         self.sizer._last_counter = [0, 0]    # just for debugging/info: init counters for insertion cache misses & hits
 
-        self.sizer.cdi()    # display the results, prepare for subdir changes
+        self.sizer.cdi(_quiet=_quiet)    # prepare for subdir changes, poss. display the results
+
+    def _get_current_dir(self, full_path=True):
+        """
+        Returns the current directory of the sizer, i.e. the dir whose size information
+        would be listed via the "ls" method.
+
+        @param full_path - [optional] bool, flag to control whether full path is returned
+            True -> return fullpath (absolute path)
+            False -> return last dir name only (last subdir)
+        @retval dir - string, current directory or None if no dir is set
+        """
+        return self.sizer._get_current_dir(full_path=full_path)
+
+    def ls(self):
+        """
+        """
+        self.sizer.ls()
+
+    def cd(self, directory=None, _quiet=False):
+        """
+        """
+        # self.sizer.cd(directory=directory)
+        self._set_dir(directory, _quiet=_quiet)
+
+    def cdi(self, index=None):
+        """
+        """
+        self.sizer.cdi(index=index)
+
+    def pwd(self):
+        """
+        """
+        print(self.sizer._get_current_dir())
 
 
 def _worker_main(connection, worker_id):
@@ -891,6 +942,100 @@ def _worker_main(connection, worker_id):
     """
     sizer = _BackgroundSizer(connection, worker_id)     # create the background-sizer object
     sizer.run()     # run the sizer
+
+
+#===========================================================================
+
+
+class DirHunterShell(cmd.Cmd):
+    """
+    Simple shell for dir hunting.
+    """
+    intro = '\nWelcome to the dir-hunter shell.   Type help or ? to list commands.\n'
+
+    def __init__(self, sizer, directory=None):
+        """
+        Initialisation.
+
+        @param sizer - Sizer object to use for the actual analysis, either instance
+            of Sizer class or MultiSizer class
+        @param directory - [optional] string, path of directory to analyse
+        """
+        super().__init__()
+        self.sizer = sizer
+
+        if directory is not None:
+            self.sizer.cd(directory, _quiet=True)
+
+        self._update_prompt()
+
+    def onecmd(self, cmd):
+        """
+        Overloaded base-class method to catch sizer errors.
+        """
+        try:
+            stop = super().onecmd(cmd)
+
+        except:
+            # handle errors by displaying but then ignoring them
+            print('*** An internal error occurred:\n')
+            traceback.print_exc()
+            print('')
+            stop = False
+
+        return stop
+
+
+    def do_cd(self, arg):
+        """
+        Change to directory and analyse it.
+        """
+        self.sizer.cd(directory=str(arg))
+        self._update_prompt()
+
+    def do_cdi(self, arg):
+        """
+        Index-based directory changing.
+        Change to subdirectory and display its analysis results.
+
+        Examples: "cdi 0" changes to largest subdirectory in current directory.
+                  "cdi -1" changes to parent directory (up to base directory of analysis)
+        """
+        index = None
+        try:
+            index = int(arg)
+        except ValueError:
+            if arg:
+                print('Error: Invalid argument "{}"'.format(arg))
+                self.do_help('cdi')
+                return
+
+        self.sizer.cdi(index=index)
+        self._update_prompt()
+
+    def do_ls(self, arg):
+        """
+        Display analysis results of current directory.
+        """
+        self.sizer.ls()
+
+    def do_pwd(self, arg):
+        """
+        Display the current directory.
+        """
+        self.sizer.pwd()
+
+    def do_exit(self, arg):
+        """
+        Quit the shell.
+        """
+        return True
+
+    def _update_prompt(self):
+        """
+        Updates the shell prompt to show the current (sub)dir.
+        """
+        self.prompt = 'dirhunt({})> '.format(self.sizer._get_current_dir(False))
 
 
 #===========================================================================
@@ -908,6 +1053,18 @@ def test_sizer(directory=None):
     return msizer
 
 
+def test_shell(directory=None):
+    """
+    """
+    if directory is None:
+        os.path.expanduser('~')
+
+    with MultiSizer() as sizer:
+        shell = DirHunterShell(sizer, directory)
+        shell.cmdloop()
+
+
+
 #===========================================================================
 #===========================================================================
 
@@ -919,4 +1076,5 @@ if __name__ == '__main__':
     except IndexError:
         dir_path = os.path.expanduser('~')
 
-    sizer = test_sizer(dir_path)
+    # sizer = test_sizer(dir_path)
+    test_shell(dir_path)
