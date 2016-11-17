@@ -7,19 +7,25 @@ Created on 2016-11-11
 Python3 version
 """
 
+import logging
+logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
+
+
+import traceback
 import os.path
 import math
 import sys
 import time
 import multiprocessing
 import datetime
-import readline
+
+try:
+    import readline
+except ImportError:
+    logging.warning('Proceeding without readline functionality. Error during importing this module:\n{}'.format(traceback.format_exc()))
+
 import cmd
-import traceback
 
-
-import logging
-logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
 
 
 #===========================================================================
@@ -817,6 +823,7 @@ class MultiSizer(object):
             for worker in self._workers:
                 # check if current worker is running
                 if not worker.is_alive():
+                    # worker has crashed  ->  cancel
                     logging.error('Worker [{}] has terminated unexpectedly. Cancelling analysis.'.format(worker.worker_id))
                     return False
 
@@ -1004,16 +1011,24 @@ class DirHunterShell(cmd.Cmd):
     def do_cd(self, arg):
         """
         Change to directory and analyse it.
+        If directory is not specified, changes to the current base directory.
         """
-        self.sizer.cd(directory=str(arg))
+        directory = str(arg)
+        if directory:
+            self.sizer.cd()
+        else:
+            self.sizer.cdi()
         self._update_prompt()
 
     def do_cdi(self, arg):
         """
         Index-based directory changing.
         Change to subdirectory and display its analysis results.
+        Indices correspond to rank indices of ls output.
+        If index is not specified, changes to the current base directory.
 
-        Examples: "cdi 0" changes to largest subdirectory in current directory.
+        Examples: "cdi 0" changes to largest subdirectory in current directory
+                  "cdi 1" changes to 2nd largest subdirectory
                   "cdi -1" changes to parent directory (up to base directory of analysis)
         """
         index = None
