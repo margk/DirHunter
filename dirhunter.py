@@ -31,8 +31,36 @@ import cmd
 #===========================================================================
 
 
+class DirHunterError(Exception):
+    """
+    Base exception for exceptions raised in this module.
+    """
+    def __init__(self, message=None):
+        super().__init__(message)
 
-class Sizer(object):
+
+class SizerError(DirHunterError):
+    """
+    Exception raised by the MultiSizer.
+    Causes: signalise need for new analysis
+    """
+    def __init__(self, message=None):
+        super().__init__(message=message)
+
+
+class WorkerError(DirHunterError):
+    """
+    Exception raised by the _BackgroundSizer.
+    Causes: invalid assigment, invalid message
+    """
+    def __init__(self, message):
+        super().__init__(message=message)
+
+
+#===========================================================================
+
+
+class Sizer:
     """
     Performs the size analysis for a specified directory and displays the results.
     """
@@ -67,7 +95,8 @@ class Sizer(object):
         If the specified dir is a subdir of the current dir, no file-system access
         is necessary and things will be fast(er).
 
-        @param directory - string, path of the dir to analyse
+        @param directory - [optional] string, path of the dir to analyse;
+            if not specified, changes to current base directory
         """
         if directory is None:
             # no dir specified...
@@ -246,6 +275,11 @@ class Sizer(object):
 
         print('\n[Unit scale: 1{}B = {:.0f}B]'.format(self._units[0], self._unit_scale))
 
+    def pwd(self):
+        """
+        """
+        print(self._get_current_dir())
+
     def _get_current_dir(self, full_path=True):
         """
         Returns the current directory of the sizer, i.e. the dir whose size information
@@ -295,8 +329,9 @@ class Sizer(object):
 
         # handle re-using of an existing info object
         if self._dir_stock:
-            self._iterate_dir_list()    # perform a single analysis iteration to initialise the info tree
-            self._insert_info(self._info_stock, self._dir_stock)    # insert the existing info object into the info tree
+            # insert the existing info object into the info tree (initialises the tree if necessary)
+            # self._iterate_dir_list()    # perform a single analysis iteration to initialise the info tree
+            self._insert_info(self._info_stock, self._dir_stock)
 
         # iteratively analyse until the list of dirs to analyse is empty
         while self._dir_list:
@@ -323,7 +358,7 @@ class Sizer(object):
         if self._dir_stock == dir_path:
             # if an existing info object is re-used, its path is stored in "_dir_stock"
             # -> skip this path during the current analysis
-            logging.debug('Re-using existing info for dir: {}'.format(dir_path))
+            logging.debug('Analysis re-use: Skipping dir: {}'.format(dir_path))
             self._dir_stock = ''
             return
 
@@ -356,6 +391,12 @@ class Sizer(object):
                     elif dir_entry.is_dir(follow_symlinks=False):
                         # current entry is a subdir  ->  create a subdir-queue entry with its name & path
                         subdir_list.append(dir_entry.path)
+
+                        # this is the (slower) version for different handling of mount points
+                        # if os.path.ismount(dir_entry.path):
+                        #     logging.info('Ignoring mount point {}'.format(dir_entry.path))
+                        # else:
+                        #     subdir_list.append(dir_entry.path)
 
                 except OSError:
                     # entry could not be accessed
@@ -403,6 +444,7 @@ class Sizer(object):
                 self._merge_info(self.base_dir_info, dir_info)
 
         else:
+            # ensure that the root of the info tree exists
             if self.base_dir_info is None:
                 self.base_dir_info = self._create_info()
 
@@ -580,7 +622,7 @@ class _BackgroundSizer(Sizer):
     def run(self):
         """
         Main method of the class.
-        Handles messaging via the connection object:
+        Handles messaging via the class' connection object:
             - Receives "process" messages, which trigger the analysis of a dir
             - Sends "done" messages when an analyis is finished
             - Receives and responds to "share" messages, which allow to "source out"
@@ -609,6 +651,7 @@ class _BackgroundSizer(Sizer):
                 #-------- request to analyse a dir
                 elif message['type'] == 'process':
                     dir_path = message['dir']   # unpack requested dir from message
+                    dir_exclude_path = message['dir_exclude']   # unpack poss. dir to exclude from message
 
                     if not self.is_idle:
                         # a busy worker cannot be assigned to another dir
@@ -618,10 +661,14 @@ class _BackgroundSizer(Sizer):
                     self.is_idle = False    # set state flag to busy
                     self._set_base_dir(dir_path)   # set specified dir as new base dir
                     time_start = datetime.datetime.now()    # just for performance info: note start time
-                    self._iterate_dir_list()    # perform a single analysis iteration to initialise the info tree
-                    if self._dir_stock:
-                        # handle re-using of an existing info object
-                        self._insert_info(self._info_stock, self._dir_stock)    # insert the existing info object into the info tree
+
+                    # self._iterate_dir_list()    # perform a single analysis iteration to initialise the info tree
+                    # if self._dir_stock:
+                    #     # handle re-using of an existing info object
+                    #     self._insert_info(self._info_stock, self._dir_stock)    # insert the existing info object into the info tree
+
+                    self._dir_stock = dir_exclude_path
+
 
                 #-------- request to hand over some of the dirs from the queue of the current analysis
                 elif message['type'] == 'share':
@@ -660,9 +707,9 @@ class _BackgroundSizer(Sizer):
 
                 # send results and signalise idleness if analyis is complete
                 if not self._dir_list:
-                    # delete any existing, re-used info object
-                    self._dir_stock = ''
-                    self._info_stock = None
+                    # # delete any existing, re-used info object
+                    # self._dir_stock = ''
+                    # self._info_stock = None
 
                     time_end = datetime.datetime.now()  # just for performance info: note end time
 
@@ -672,22 +719,15 @@ class _BackgroundSizer(Sizer):
                     self._last_counter = [0, 0]    # just for debugging/info: init counters for insertion cache misses & hits
 
                     # finally propagate the analysis result
-                    self._connection.send({'type': 'done', 'info': self.base_dir_info, 'dir': self.base_dir})
+                    self._connection.send({'type': 'done', 'info': self.base_dir_info, 'dir': self.base_dir, 'dir_exclude': self._dir_stock})
 
                     self.is_idle = True     # set worker state to idle
 
 
-class WorkerError(Exception):
+class MultiSizer(Sizer):
     """
-    Exception raised by the _BackgroundSizer.
-    Causes: invalid assigment, invalid message
-    """
-    def __init__(self, message):
-        super().__init__(self, message)
+    Extension of Sizer class which starts multiple sizer processes to distribute work.
 
-
-class MultiSizer(object):
-    """
     Performs the size analysis for a specified directory and displays the results.
     Runs the analysis in background processes to distribute and speed up the work.
     Can/should be used as a context manager for automatic clean-up of background processes.
@@ -696,7 +736,7 @@ class MultiSizer(object):
         """
         Initialisation.
         """
-        self.sizer = Sizer()    # create the sizer object for collecting the results
+        super().__init__()  # init Sizer (base class)
         self._workers = []  # init list of background workers
 
     def __del__(self):
@@ -705,6 +745,7 @@ class MultiSizer(object):
         Stops any running background workers.
         """
         self._stop_workers()
+        # super().__del__()
 
     def __enter__(self):
         """
@@ -754,8 +795,10 @@ class MultiSizer(object):
 
         if n_workers is None:
             # number of workers not specified  ->  use number of processors/cores
-            n_workers = multiprocessing.cpu_count()
-            # n_workers = 8
+            try:
+                n_workers = multiprocessing.cpu_count()
+            except:
+                n_workers = 2
 
         # create & start the workers
         for i in range(n_workers):
@@ -807,7 +850,7 @@ class MultiSizer(object):
         # init the analysis if necessary
         if not self._get_busy_workers():
             # all workers idle  ->  assign the base dir to the first worker
-            self._workers[0].connection.send({'type': 'process', 'dir': self.sizer.base_dir})
+            self._workers[0].connection.send({'type': 'process', 'dir': self.base_dir, 'dir_exclude': self._dir_stock})
             self._workers[0].is_idle = False
 
         # prepare the sharing/hand-over mechanism:
@@ -833,45 +876,70 @@ class MultiSizer(object):
 
                     if message['type'] == 'done':
                         #---- worker has finished analysis
-                        dir_path = message['dir']
-                        dir_info = message['info']
-                        self.sizer._insert_info(dir_info, dir_path)
-                        worker.is_idle = True
-                        worker.task_count += 1
+                        dir_path = message['dir']   # fetch analysed path
+                        dir_info = message['info']      # fetch analysis result
+                        dir_exclude_path = message['dir_exclude']   # fetch path to exclude
+
+                        self._insert_info(dir_info, dir_path)   # insert analysis result into common info tree
+                        worker.is_idle = True       # set worker status to signalise idle
+                        worker.task_count += 1      # increase counter for accomplished missions
                         logging.debug('Worker [{}] finished dir: {}'.format(worker.worker_id, dir_path))
                         # logging.debug('Inserted beneath {}: {}'.format(dir_path, ', '.join(dir_info['dirs'].keys())))
+                        self._dir_stock = dir_exclude_path      # update stock path with sent exclude path (if worker encountered exclude path it sends back empty path)
 
                     elif message['type'] == 'share':
-                        #---- worker hands over dirs from its analysis queue
+                        #---- worker shares (hands over) dirs from its analysis queue
                         logging.debug('Share response from worker [{}]: dirs={}'.format(worker.worker_id, message['dirs']))
                         assert pending_share_request is not None, 'Internal inconsistency: Got share response from worker [{}] without pending_share_request being set.'.format(worker.worker_id)
-                        dir_list = message['dirs']
+
+                        dir_list = message['dirs']      # fetch list of dirs to share/distribute
+                        if self._dir_stock in dir_list:
+                            dir_list.remove(self._dir_stock)
+                            logging.debug('Analysis re-use: Skipping dir: {}'.format(self._dir_stock))
+
                         if dir_list:
-                            idle_workers = self._get_idle_workers()
+                            idle_workers = self._get_idle_workers()     # fetch list of workers which can be assigned to a dir
                             assert (len(dir_list) <= len(idle_workers)), 'Internal inconsistency: More dirs to distribute than idle workers.'
                             for worker, dir_path in zip(idle_workers, dir_list):
-                                worker.connection.send({'type': 'process', 'dir': dir_path})
+                                # assign a currently idle worker to a dir
+                                worker.connection.send({'type': 'process', 'dir': dir_path, 'dir_exclude': self._dir_stock})
                                 worker.is_idle = False
                                 logging.debug('Worker [{}] assigned to dir: {}'.format(worker.worker_id, dir_path))
-                        pending_share_request = None
+                        pending_share_request = None    # finally delete the share request (to permit handling of a new request)
 
                     else:
                         #---- unknown message type  ->  guru meditation
                         raise TypeError('Unhandled message "{}" received from worker process [{}]'.format(message, worker.worker_id))
 
-                # current worker: if workers is doing something and there is no currently pending
-                # share request then send a share request to the current worker
-                if not worker.is_idle and not pending_share_request:
-                    idle_workers = self._get_idle_workers()     # determine number of idle workers (= number of requested dirs)
-                    if idle_workers:
-                        # there are idle workers  ->  prepare a shar request with an expiration time
-                        # and send it to the current worker
-                        pending_share_request = {'type': 'share', 'n_dirs': len(idle_workers),
-                                                 'expiration': (datetime.datetime.now() + share_request_expiration),
-                                                 'expired': False,
-                                                 'worker': worker.worker_id}
-                        worker.connection.send(pending_share_request)       # send share request to current worker
-                        logging.debug('Sent share request to worker [{}]: {} dirs'.format(worker.worker_id, pending_share_request['n_dirs']))
+                # # current worker: if worker is doing something and there is no currently pending
+                # # share request then send a share request to the current worker
+                # if not worker.is_idle and not pending_share_request:
+                #     idle_workers = self._get_idle_workers()     # determine number of idle workers (= number of requested dirs)
+                #     if idle_workers:
+                #         # there are idle workers  ->  prepare a shar request with an expiration time
+                #         # and send it to the current worker
+                #         pending_share_request = {'type': 'share', 'n_dirs': len(idle_workers),
+                #                                  'expiration': (datetime.datetime.now() + share_request_expiration),
+                #                                  'expired': False,
+                #                                  'worker': worker.worker_id}
+                #         worker.connection.send(pending_share_request)       # send share request to current worker
+                #         logging.debug('Sent share request to worker [{}]: {} dirs'.format(worker.worker_id, pending_share_request['n_dirs']))
+
+
+            # share-request management: if there are idle workers, a share request will be sent to the
+            # first busy worker for sharing some work to employ the idle workers;
+            # however, only a single share request is handled in general (queueing not considered usefull)
+            idle_workers = self._get_idle_workers()     # get list of idle workers (= number of dirs to request)
+            if idle_workers and not pending_share_request:      # there are idle workers and no pending share request
+                busy_workers = self._get_busy_workers()     # get list of busy workers
+                if busy_workers:
+                    # prepare a share request with an expiration time and send it to the first busy worker
+                    pending_share_request = {'type': 'share', 'n_dirs': len(idle_workers),
+                                             'expiration': (datetime.datetime.now() + share_request_expiration),
+                                             'expired': False,
+                                             'worker': busy_workers[0].worker_id}
+                    busy_workers[0].connection.send(pending_share_request)       # send share request to current worker
+                    logging.debug('Sent share request to worker [{}]: {} dirs'.format(busy_workers[0].worker_id, pending_share_request['n_dirs']))
 
 
             # main loop (not worker loop): if there is a pending share request, check if it has expired
@@ -879,11 +947,11 @@ class MultiSizer(object):
                 if pending_share_request['expired']:
                     # share request has already expired  ->  discard it
                     logging.debug('Discarding share request to worker [{}] ({} dirs)'.format(pending_share_request['worker'], pending_share_request['n_dirs']))
-                    pending_share_request = None
+                    pending_share_request = None    # delete share request
                 elif datetime.datetime.now() > pending_share_request['expiration']:
                     # expiration time of the share request has passed  ->  flag it to be expired
                     logging.debug('Expiring share request to worker [{}] ({} dirs)'.format(pending_share_request['worker'], pending_share_request['n_dirs']))
-                    pending_share_request['expired'] = True
+                    pending_share_request['expired'] = True     # indicate expired share request
 
             # check whether all workers are busy and wait a bit before the next iteration if so
             idle_workers = self._get_idle_workers()
@@ -894,65 +962,72 @@ class MultiSizer(object):
         return True
 
 
-    def _set_dir(self, directory, _quiet=False):
+    def _set_dir(self, directory=None, _quiet=False):
         """
         Sets the directory to analyse and starts the analysis.
 
-        @param directory - string, path of directory to analyse
+        @param directory - [optional] string, path of directory to analyse; if not specified,
+            the currently set base dir will be used
         """
         time_start = datetime.datetime.now()    # record start time (just for debugging/info)
 
-        self.sizer._set_base_dir(directory)     # set specified dir in main sizer object
+        if directory:
+            self._set_base_dir(directory)     # set specified dir in main sizer object
+
         self._start_workers()   # start the background workers
         success = self._run()             # perform the analysis
         self._stop_workers()    # stop the background workers
 
         if success:
-            self.sizer._sum_sizes()     # calculate all directories' sizes
+            # delete any existing, re-used info object
+            self._dir_stock = ''
+            self._info_stock = None
+
+            self._sum_sizes()     # calculate all directories' sizes
 
             time_end = datetime.datetime.now()      # record end time (just for debugging/info)
             print('===== elapsed time: ', str(time_end - time_start))
-            print('===== insertion cache: {} hits, {} misses'.format(self.sizer._last_counter[1], self.sizer._last_counter[0]))
-            self.sizer._last_counter = [0, 0]    # just for debugging/info: init counters for insertion cache misses & hits
+            print('===== insertion cache: {} hits, {} misses'.format(self._last_counter[1], self._last_counter[0]))
+            self._last_counter = [0, 0]    # just for debugging/info: init counters for insertion cache misses & hits
 
-            self.sizer.cdi(_quiet=_quiet)    # prepare for subdir changes, poss. display the results
+            self.cdi(_quiet=_quiet)    # prepare for subdir changes, poss. display the results
         else:
-            self.sizer.base_dir = None
-            self.sizer.base_dir_info = None
+            self.base_dir = None
+            self.base_dir_info = None
             # raise SizerError('')
 
-    def _get_current_dir(self, full_path=True):
+    def _analyse_base_dir(self):
         """
-        Returns the current directory of the sizer, i.e. the dir whose size information
-        would be listed via the "ls" method.
+        Overloaded from base class.
+        Basically just raises a SizerError to signalise that a (new) background-multiprocess
+        analysis needs to be started.
+        (This class does not perform any analysis itself but distributes the task to background workers.)
+        """
+        # set up re-using of an existing info object (if there is any)
+        if self._dir_stock:
+            # insert the existing info object into the info tree (initialises the tree if necessary)
+            self._insert_info(self._info_stock, self._dir_stock)
 
-        @param full_path - [optional] bool, flag to control whether full path is returned
-            True -> return fullpath (absolute path)
-            False -> return last dir name only (last subdir)
-        @retval dir - string, current directory or None if no dir is set
-        """
-        return self.sizer._get_current_dir(full_path=full_path)
-
-    def ls(self):
-        """
-        """
-        self.sizer.ls()
+        # raise SizerError to signalise that (new) background-multiprocess analysis needs to be started
+        raise SizerError
 
     def cd(self, directory=None, _quiet=False):
         """
-        """
-        # self.sizer.cd(directory=directory)
-        self._set_dir(directory, _quiet=_quiet)
+        Overloaded from base class.
+        Changes to the specified directory and displays its info.
 
-    def cdi(self, index=None):
+        @param directory - [optional] string, path of the dir to analyse;
+            if not specified, changes to current base directory
         """
-        """
-        self.sizer.cdi(index=index)
+        try:
+            # call the base class' "cd" method
+            # (works if the specified dir is a subdir of the base dir)
+            super().cd(directory=directory)
 
-    def pwd(self):
-        """
-        """
-        print(self.sizer._get_current_dir())
+        except SizerError:
+            # SizerError signalises that specified dir is not a subdir of the base dir
+            # -> trigger new analysis
+            self._set_dir(_quiet=_quiet)
 
 
 def _worker_main(connection, worker_id):
@@ -1015,7 +1090,7 @@ class DirHunterShell(cmd.Cmd):
         """
         directory = str(arg)
         if directory:
-            self.sizer.cd()
+            self.sizer.cd(directory)
         else:
             self.sizer.cdi()
         self._update_prompt()
@@ -1024,7 +1099,7 @@ class DirHunterShell(cmd.Cmd):
         """
         Index-based directory changing.
         Change to subdirectory and display its analysis results.
-        Indices correspond to rank indices of ls output.
+        Indices correspond to size-rank indices of ls output.
         If index is not specified, changes to the current base directory.
 
         Examples: "cdi 0" changes to largest subdirectory in current directory
@@ -1065,7 +1140,7 @@ class DirHunterShell(cmd.Cmd):
         """
         Updates the shell prompt to show the current (sub)dir.
         """
-        self.prompt = 'dirhunt({})> '.format(self.sizer._get_current_dir(False))
+        self.prompt = 'dirhunter({})> '.format(self.sizer._get_current_dir(False))
 
 
 #===========================================================================
