@@ -240,7 +240,8 @@ class Sizer:
             last_info = info
 
         # print the path string and the current directory's size
-        print('{}: {}\n'.format(dir_path, self._format_size(dir_info['size'], unit_indent=False)))
+        print('{}: {}'.format(dir_path, self._format_size(dir_info['size'], unit_indent=False)))
+        print('[total counts: {} files, {} dirs]\n'.format(*self._get_counts(dir_info)))
 
         # assemble the subdirectories info: collect dir names, sizes and incompleteness, sort by size
         subdirs = sorted(dir_info['dirs'].items(), key=lambda info : info[1]['size'], reverse=True)
@@ -347,6 +348,7 @@ class Sizer:
 
         print('===== elapsed time: ', str(time_end - time_start))
         print('===== insertion cache: {} hits, {} misses'.format(self._last_counter[1], self._last_counter[0]))
+        print('===== total count: {} files,  {} dirs'.format(*self._get_counts(self.base_dir_info)))
         self._last_counter = [0, 0]    # just for debugging/info: init counters for insertion cache misses & hits
 
     def _iterate_dir_list(self):
@@ -384,6 +386,7 @@ class Sizer:
                 try:
                     if dir_entry.is_file(follow_symlinks=False):
                         # current entry is a file  ->  add its size to dir size
+                        dir_info['file_count'] += 1     # increase file counter
                         stat = dir_entry.stat(follow_symlinks=False)
                         dir_info['files_size'] += float(stat.st_size)
                         # print('\t{}: {}'.format(dir_entry.path, float(stat.st_size)))
@@ -420,11 +423,12 @@ class Sizer:
 
         @retval dir_info - dict, initialised dir-info object
             key 'size' - float, sum of subdirs & files sizes
+            key 'file_count' - int, number of files in dir
             key 'files_size' - float, sum of files sizes
             key 'incomplete' - bool, flag to indicate incomplete size analysis (due to denied access)
             key 'dirs' - dict, container for subdirs' info objects (keys are dir names, values are dir infos)
         """
-        dir_info = {'size': 0.0, 'files_size': 0.0, 'incomplete': False, 'dirs': {}}
+        dir_info = {'size': 0.0, 'file_count': 0, 'files_size': 0.0, 'incomplete': False, 'dirs': {}}
 
         return dir_info
 
@@ -514,8 +518,9 @@ class Sizer:
         @param dir_info_main - dir-info object (dict), dir info to update (merge into)
         @param dir_info_add - dir-info object (dict), dir info to add to the main info
         """
-        dir_info_main['files_size'] += dir_info_add['files_size']
-        dir_info_main['incomplete'] |= dir_info_add['incomplete']
+        dir_info_main['files_size'] += dir_info_add['files_size']   # add file sizes
+        dir_info_main['incomplete'] |= dir_info_add['incomplete']   # add incomplete flags
+        dir_info_main['file_count'] += dir_info_add['file_count']   # add file counters
 
         # merge the subdirs, i.e. the "dirs" part of the info objects
         for subdir in dir_info_add['dirs']:
@@ -525,7 +530,6 @@ class Sizer:
             else:
                 # new dir  ->  just copy over
                 dir_info_main['dirs'][subdir] = dir_info_add['dirs'][subdir]
-
 
     def _sum_sizes(self, dir_info=None):
         """
@@ -596,6 +600,29 @@ class Sizer:
             fish += ' ' * (len(self._units) - order)
 
         return fish
+
+
+    def _get_counts(self, dir_info):
+        """
+        Determines the total numbers of directories and files in the directory
+        hierarchy below the directory of the specified info object.
+        I.e. requires the info object to be filled with analysis results.
+
+        @param dir_info - DirInfo, info object (with subdir info)
+        @retval file_count, dir_count - (int, int) tuple, total number of files
+            and total number of dirs
+        """
+        file_count = dir_info['file_count'] # init file count with number of files in dir_info's dir
+        dir_count = len(dir_info['dirs'])   # init dir count with number of subdirs in dir_info's dir
+
+        # iterate down the dir hierarchy and add file & dir counts
+        for subdir_info in dir_info['dirs'].values():
+            sub_file_count, sub_dir_count = self._get_counts(subdir_info)   # subdir recursion
+            file_count += sub_file_count
+            dir_count += sub_dir_count
+
+        return file_count, dir_count
+
 
 
 #===========================================================================
@@ -988,6 +1015,7 @@ class MultiSizer(Sizer):
             time_end = datetime.datetime.now()      # record end time (just for debugging/info)
             print('===== elapsed time: ', str(time_end - time_start))
             print('===== insertion cache: {} hits, {} misses'.format(self._last_counter[1], self._last_counter[0]))
+            print('===== total count: {} files, {} dirs]\n'.format(*self._get_counts(self.base_dir_info)))
             self._last_counter = [0, 0]    # just for debugging/info: init counters for insertion cache misses & hits
 
             self.cdi(_quiet=_quiet)    # prepare for subdir changes, poss. display the results
