@@ -22,7 +22,7 @@ import datetime
 try:
     import readline
 except ImportError:
-    logging.warning('Proceeding without readline functionality. Error during importing this module:\n{}'.format(traceback.format_exc()))
+    logging.warning('Proceeding without readline functionality. Error during import of this module:\n{}'.format(traceback.format_exc()))
 
 import cmd
 
@@ -258,6 +258,7 @@ class Sizer:
             fish += '{{:<{:.0f}}}'.format(size_steps+2)   # formating pattern for size bar
             fish += '{:>5} '   # formating pattern for size rank
             fish += '{}'      # formating pattern for dir name
+            fish += '   [{} dirs, {} files]'      # formating pattern for dir & file counts
 
             # display the subdirectories info
             # max_size = max([d[2] for d in subdirs])
@@ -272,7 +273,8 @@ class Sizer:
                     size_bar = crab.format('#' * (1 + int(d[2] / max_size * (size_steps - 1))))
                 else:
                     size_bar = crab.format('')
-                print(fish.format(d[1], incomplete_flag, size_bar, '[{:.0f}]'.format(i), d[0]))
+                file_count, dir_count = self._get_counts(dir_info['dirs'][d[0]])
+                print(fish.format(d[1], incomplete_flag, size_bar, '[{:.0f}]'.format(i), d[0], dir_count, file_count))
 
         print('\n[Unit scale: 1{}B = {:.0f}B]'.format(self._units[0], self._unit_scale))
 
